@@ -1,0 +1,356 @@
+-- Roblox Lua | LocalScript | Delta Executor
+-- Luau 2024+ | No dependencies
+-- UI: draggable window, tabbed, per-feature toggle, close/remove button
+
+local Players        = game:GetService("Players")
+local RunService     = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local lp   = Players.LocalPlayer
+local cam  = workspace.CurrentCamera
+
+-- ══════════════════════════════════════════
+--  CLEANUP old inject
+-- ══════════════════════════════════════════
+if _G.OllieUI then _G.OllieUI:Destroy() end
+
+-- ══════════════════════════════════════════
+--  CONFIG
+-- ══════════════════════════════════════════
+local CFG = {
+    FlySpeed     = 80,
+    FlingForce   = 950000,
+    FlyEnabled   = false,
+    LoopFling    = false,
+    FlingTarget  = "",
+    SpeedEnabled = false,
+    SpeedValue   = 60,
+    NoclipOn     = false,
+    InfJumpOn    = false,
+}
+
+-- ══════════════════════════════════════════
+--  HELPERS
+-- ══════════════════════════════════════════
+local function getChar(p)  return p and p.Character end
+local function getRoot(p)  local c=getChar(p) return c and c:FindFirstChild("HumanoidRootPart") end
+local function getHum(p)   local c=getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
+local function findPlayer(name)
+    name = name:lower()
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p ~= lp and p.Name:lower():find(name) then return p end
+    end
+end
+
+-- ══════════════════════════════════════════
+--  FLY
+-- ══════════════════════════════════════════
+local flyConn, bVel, bGyro
+
+local function stopFly()
+    CFG.FlyEnabled = false
+    if flyConn then flyConn:Disconnect() flyConn=nil end
+    if bVel    then bVel:Destroy()    bVel=nil    end
+    if bGyro   then bGyro:Destroy()   bGyro=nil   end
+    local h=getHum(lp) if h then h.PlatformStand=false end
+end
+
+local function startFly()
+    stopFly()
+    local root=getRoot(lp) if not root then return end
+    CFG.FlyEnabled=true
+    bVel=Instance.new("BodyVelocity")
+    bVel.MaxForce=Vector3.new(1e5,1e5,1e5) bVel.Velocity=Vector3.zero bVel.Parent=root
+    bGyro=Instance.new("BodyGyro")
+    bGyro.MaxTorque=Vector3.new(1e5,1e5,1e5) bGyro.D=100 bGyro.Parent=root
+    local h=getHum(lp) if h then h.PlatformStand=true end
+    flyConn=RunService.RenderStepped:Connect(function()
+        if not CFG.FlyEnabled then return end
+        local dir=Vector3.zero
+        local ks=UserInputService.IsKeyDown
+        if ks(UserInputService,Enum.KeyCode.W)          then dir=dir+cam.CFrame.LookVector  end
+        if ks(UserInputService,Enum.KeyCode.S)          then dir=dir-cam.CFrame.LookVector  end
+        if ks(UserInputService,Enum.KeyCode.A)          then dir=dir-cam.CFrame.RightVector end
+        if ks(UserInputService,Enum.KeyCode.D)          then dir=dir+cam.CFrame.RightVector end
+        if ks(UserInputService,Enum.KeyCode.Space)      then dir=dir+Vector3.new(0,1,0)     end
+        if ks(UserInputService,Enum.KeyCode.LeftShift)  then dir=dir-Vector3.new(0,1,0)     end
+        bVel.Velocity = dir.Magnitude>0 and dir.Unit*CFG.FlySpeed or Vector3.zero
+        bGyro.CFrame  = cam.CFrame
+    end)
+end
+
+-- ══════════════════════════════════════════
+--  FLING
+-- ══════════════════════════════════════════
+local flingLoop
+
+local function doFling(target)
+    local myRoot=getRoot(lp) local tRoot=getRoot(target)
+    if not myRoot or not tRoot then return end
+    myRoot.CFrame=tRoot.CFrame*CFrame.new(0,0,-1.5)
+    local bv=Instance.new("BodyVelocity")
+    bv.MaxForce=Vector3.new(CFG.FlingForce,CFG.FlingForce,CFG.FlingForce)
+    bv.Velocity=(tRoot.CFrame.LookVector+Vector3.new(0,1,0)).Unit*CFG.FlingForce
+    bv.Parent=tRoot
+    game:GetService("Debris"):AddItem(bv,0.12)
+end
+
+local function stopLoopFling()
+    CFG.LoopFling=false
+    if flingLoop then flingLoop:Disconnect() flingLoop=nil end
+end
+
+local function startLoopFling()
+    stopLoopFling()
+    CFG.LoopFling=true
+    flingLoop=RunService.Heartbeat:Connect(function()
+        if not CFG.LoopFling then return end
+        local t=findPlayer(CFG.FlingTarget)
+        if t then doFling(t) end
+    end)
+end
+
+-- ══════════════════════════════════════════
+--  SPEED
+-- ══════════════════════════════════════════
+local speedConn
+
+local function stopSpeed()
+    CFG.SpeedEnabled=false
+    if speedConn then speedConn:Disconnect() speedConn=nil end
+    local h=getHum(lp) if h then h.WalkSpeed=16 end
+end
+
+local function startSpeed()
+    stopSpeed()
+    CFG.SpeedEnabled=true
+    speedConn=RunService.Heartbeat:Connect(function()
+        local h=getHum(lp)
+        if h then h.WalkSpeed=CFG.SpeedValue end
+    end)
+end
+
+-- ══════════════════════════════════════════
+--  NOCLIP
+-- ══════════════════════════════════════════
+local noclipConn
+
+local function stopNoclip()
+    CFG.NoclipOn=false
+    if noclipConn then noclipConn:Disconnect() noclipConn=nil end
+end
+
+local function startNoclip()
+    stopNoclip()
+    CFG.NoclipOn=true
+    noclipConn=RunService.Stepped:Connect(function()
+        local c=getChar(lp)
+        if not c then return end
+        for _,p in ipairs(c:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide=false end
+        end
+    end)
+end
+
+-- ══════════════════════════════════════════
+--  INF JUMP
+-- ══════════════════════════════════════════
+local jumpConn
+
+local function stopInfJump()
+    CFG.InfJumpOn=false
+    if jumpConn then jumpConn:Disconnect() jumpConn=nil end
+end
+
+local function startInfJump()
+    stopInfJump()
+    CFG.InfJumpOn=true
+    jumpConn=UserInputService.JumpRequest:Connect(function()
+        local h=getHum(lp)
+        if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end)
+end
+
+-- ══════════════════════════════════════════
+--  FULL CLEANUP
+-- ══════════════════════════════════════════
+local function nukeAll()
+    stopFly() stopLoopFling() stopSpeed() stopNoclip() stopInfJump()
+end
+
+-- ══════════════════════════════════════════
+--  UI BUILDER
+-- ══════════════════════════════════════════
+local COLORS = {
+    bg      = Color3.fromRGB(18,18,24),
+    panel   = Color3.fromRGB(26,26,34),
+    accent  = Color3.fromRGB(120,80,255),
+    on      = Color3.fromRGB(80,220,120),
+    off     = Color3.fromRGB(200,60,60),
+    text    = Color3.fromRGB(230,230,240),
+    sub     = Color3.fromRGB(140,140,160),
+    tab     = Color3.fromRGB(36,36,46),
+    tabsel  = Color3.fromRGB(120,80,255),
+    border  = Color3.fromRGB(50,50,70),
+}
+
+local gui = Instance.new("ScreenGui")
+gui.Name            = "OllieTroll"
+gui.ResetOnSpawn    = false
+gui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
+gui.IgnoreGuiInset  = true
+
+-- try protected parent for Delta
+pcall(function()
+    gui.Parent = game:GetService("CoreGui")
+end)
+if not gui.Parent then gui.Parent = lp:WaitForChild("PlayerGui") end
+
+_G.OllieUI = gui
+
+-- ── MAIN FRAME ──────────────────────────────────
+local main = Instance.new("Frame")
+main.Size            = UDim2.new(0,340,0,420)
+main.Position        = UDim2.new(0.5,-170,0.5,-210)
+main.BackgroundColor3= COLORS.bg
+main.BorderSizePixel = 0
+main.Active          = true
+main.Parent          = gui
+Instance.new("UICorner",main).CornerRadius = UDim.new(0,10)
+local mainStroke = Instance.new("UIStroke",main)
+mainStroke.Color     = COLORS.border
+mainStroke.Thickness = 1.5
+
+-- ── TITLE BAR ───────────────────────────────────
+local titleBar = Instance.new("Frame")
+titleBar.Size            = UDim2.new(1,0,0,38)
+titleBar.BackgroundColor3= COLORS.accent
+titleBar.BorderSizePixel = 0
+titleBar.Parent          = main
+Instance.new("UICorner",titleBar).CornerRadius = UDim.new(0,10)
+-- bottom fill so top corners only
+local titleFill = Instance.new("Frame")
+titleFill.Size               = UDim2.new(1,0,0.5,0)
+titleFill.Position           = UDim2.new(0,0,0.5,0)
+titleFill.BackgroundColor3   = COLORS.accent
+titleFill.BorderSizePixel    = 0
+titleFill.Parent             = titleBar
+
+local titleLbl = Instance.new("TextLabel")
+titleLbl.Size                = UDim2.new(1,-80,1,0)
+titleLbl.Position            = UDim2.new(0,12,0,0)
+titleLbl.BackgroundTransparency = 1
+titleLbl.Text                = "🥔  olliE Troll"
+titleLbl.TextColor3          = Color3.new(1,1,1)
+titleLbl.Font                = Enum.Font.GothamBold
+titleLbl.TextSize             = 15
+titleLbl.TextXAlignment      = Enum.TextXAlignment.Left
+titleLbl.Parent              = titleBar
+
+-- close / remove button
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size               = UDim2.new(0,28,0,28)
+closeBtn.Position           = UDim2.new(1,-34,0,5)
+closeBtn.BackgroundColor3   = COLORS.off
+closeBtn.Text               = "✕"
+closeBtn.TextColor3         = Color3.new(1,1,1)
+closeBtn.Font               = Enum.Font.GothamBold
+closeBtn.TextSize            = 14
+closeBtn.BorderSizePixel    = 0
+closeBtn.Parent             = titleBar
+Instance.new("UICorner",closeBtn).CornerRadius = UDim.new(0,6)
+closeBtn.MouseButton1Click:Connect(function()
+    nukeAll()
+    gui:Destroy()
+    _G.OllieUI = nil
+end)
+
+-- ── DRAG ────────────────────────────────────────
+do
+    local dragging, dragStart, startPos
+    titleBar.InputBegan:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 then
+            dragging=true dragStart=i.Position startPos=main.Position
+        end
+    end)
+    titleBar.InputEnded:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 then dragging=false end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if dragging and i.UserInputType==Enum.UserInputType.MouseMovement then
+            local delta=i.Position-dragStart
+            main.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+delta.X,
+                                     startPos.Y.Scale,startPos.Y.Offset+delta.Y)
+        end
+    end)
+end
+
+-- ── TAB BAR ─────────────────────────────────────
+local tabBar = Instance.new("Frame")
+tabBar.Size             = UDim2.new(1,0,0,34)
+tabBar.Position         = UDim2.new(0,0,0,38)
+tabBar.BackgroundColor3 = COLORS.panel
+tabBar.BorderSizePixel  = 0
+tabBar.Parent           = main
+local tabLayout = Instance.new("UIListLayout",tabBar)
+tabLayout.FillDirection = Enum.FillDirection.Horizontal
+tabLayout.SortOrder     = Enum.SortOrder.LayoutOrder
+
+-- content area
+local content = Instance.new("Frame")
+content.Size            = UDim2.new(1,0,1,-72)
+content.Position        = UDim2.new(0,0,0,72)
+content.BackgroundColor3= COLORS.panel
+content.BorderSizePixel = 0
+content.Parent          = main
+local contentPad = Instance.new("UIPadding",content)
+contentPad.PaddingLeft   = UDim.new(0,10)
+contentPad.PaddingRight  = UDim.new(0,10)
+contentPad.PaddingTop    = UDim.new(0,8)
+contentPad.PaddingBottom = UDim.new(0,8)
+Instance.new("UICorner",content).CornerRadius = UDim.new(0,10)
+
+-- ── TAB SYSTEM ──────────────────────────────────
+local tabs       = {}
+local tabBtns    = {}
+local activeTab  = nil
+
+local function selectTab(name)
+    for n,frame in pairs(tabs) do
+        frame.Visible = (n==name)
+    end
+    for n,btn in pairs(tabBtns) do
+        btn.BackgroundColor3 = (n==name) and COLORS.tabsel or COLORS.tab
+        btn.TextColor3       = (n==name) and Color3.new(1,1,1) or COLORS.sub
+    end
+    activeTab=name
+end
+
+local function addTab(name,label)
+    local btn = Instance.new("TextButton")
+    btn.Size              = UDim2.new(0,80,1,0)
+    btn.BackgroundColor3  = COLORS.tab
+    btn.BorderSizePixel   = 0
+    btn.Text              = label
+    btn.TextColor3        = COLORS.sub
+    btn.Font              = Enum.Font.GothamSemibold
+    btn.TextSize           = 12
+    btn.Parent            = tabBar
+    tabBtns[name]         = btn
+
+    local frame = Instance.new("ScrollingFrame")
+    frame.Size              = UDim2.new(1,0,1,0)
+    frame.BackgroundTransparency = 1
+    frame.BorderSizePixel   = 0
+    frame.ScrollBarThickness = 3
+    frame.ScrollBarImageColor3 = COLORS.accent
+    frame.CanvasSize        = UDim2.new(0,0,0,0)
+    frame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    frame.Visible           = false
+    frame.Parent            = content
+    local fl = Instance.new("UIListLayout",frame)
+    fl.SortOrder            = Enum.SortOrder.LayoutOrder
+    fl.Padding              = UDim.new(0,6)
+    tabs[name]              = frame
+
+    btn.Mouse
